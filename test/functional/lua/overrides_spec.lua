@@ -13,6 +13,7 @@ local command = helpers.command
 local write_file = helpers.write_file
 local redir_exec = helpers.redir_exec
 local exec_lua = helpers.exec_lua
+local remove_trace = helpers.remove_trace
 
 local screen
 
@@ -54,11 +55,11 @@ describe('print', function()
     eq('', redir_exec('luafile ' .. fname))
     -- TODO(bfredl): these look weird, print() should not use "E5114:" style errors..
     eq('\nE5108: Error executing lua E5114: Error while converting print argument #2: [NULL]',
-       redir_exec('lua print("foo", v_nilerr, "bar")'))
+       remove_trace(redir_exec('lua print("foo", v_nilerr, "bar")')))
     eq('\nE5108: Error executing lua E5114: Error while converting print argument #2: Xtest-functional-lua-overrides-luafile:2: abc',
-       redir_exec('lua print("foo", v_abcerr, "bar")'))
+       remove_trace(redir_exec('lua print("foo", v_abcerr, "bar")')))
     eq('\nE5108: Error executing lua E5114: Error while converting print argument #2: <Unknown error: lua_tolstring returned NULL for tostring result>',
-       redir_exec('lua print("foo", v_tblout, "bar")'))
+       remove_trace(redir_exec('lua print("foo", v_tblout, "bar")')))
   end)
   it('prints strings with NULs and NLs correctly', function()
     meths.set_option('more', true)
@@ -160,15 +161,15 @@ describe('debug.debug', function()
       {0:~                                                    }|
       {0:~                                                    }|
       {0:~                                                    }|
-      {0:~                                                    }|
-      {0:~                                                    }|
-      {0:~                                                    }|
       nil                                                  |
       lua_debug> print("TEST")                             |
       TEST                                                 |
                                                            |
       {E:E5108: Error executing lua [string ":lua"]:5: attempt}|
       {E: to perform arithmetic on local 'a' (a nil value)}    |
+      {E:stack traceback:}                                     |
+      {E:        [string ":lua"]:5: in function 'Test'}        |
+      {E:        [string ":lua"]:1: in main chunk}             |
       Interrupt: {cr:Press ENTER or type command to continue}^   |
     ]]}
     feed('<C-l>:lua Test()\n')
@@ -196,13 +197,13 @@ describe('debug.debug', function()
       {0:~                                                    }|
       {0:~                                                    }|
       {0:~                                                    }|
-      {0:~                                                    }|
-      {0:~                                                    }|
-      {0:~                                                    }|
       nil                                                  |
       lua_debug>                                           |
       {E:E5108: Error executing lua [string ":lua"]:5: attempt}|
       {E: to perform arithmetic on local 'a' (a nil value)}    |
+      {E:stack traceback:}                                     |
+      {E:        [string ":lua"]:5: in function 'Test'}        |
+      {E:        [string ":lua"]:1: in main chunk}             |
       {cr:Press ENTER or type command to continue}^              |
     ]]}
   end)

@@ -85,6 +85,26 @@ static void nlua_error(lua_State *const lstate, const char *const msg)
   lua_pop(lstate, 1);
 }
 
+/// Like lua_pcall, but use debug.traceback as errfunc.
+///
+/// @param lstate Lua interpreter state
+/// @param[in] nargs Number of arguments expected by the function being called.
+/// @param[in] nresults Number of results the function returns.
+static int nlua_pcall(lua_State *lstate, int nargs, int nresults)
+{
+  lua_getglobal(lstate, "debug");
+  lua_getfield(lstate, -1, "traceback");
+  lua_remove(lstate, -2);
+  lua_insert(lstate, -2 - nargs);
+  int status = lua_pcall(lstate, nargs, nresults, -2 - nargs);
+  if (status) {
+    lua_remove(lstate, -2);
+  } else {
+    lua_remove(lstate, -1 - nresults);
+  }
+  return status;
+}
+
 /// Return version of current neovim build
 ///
 /// @param  lstate  Lua interpreter state.
@@ -285,7 +305,7 @@ static int nlua_luv_cfpcall(lua_State *lstate, int nargs, int nresult,
   in_fast_callback++;
 
   int top = lua_gettop(lstate);
-  int status = lua_pcall(lstate, nargs, nresult, 0);
+  int status = nlua_pcall(lstate, nargs, nresult);
   if (status) {
     if (status == LUA_ERRMEM && !(flags & LUVF_CALLBACK_NOEXIT)) {
       // consider out of memory errors unrecoverable, just like xmalloc()
@@ -316,7 +336,7 @@ static void nlua_schedule_event(void **argv)
   lua_State *const lstate = nlua_enter();
   nlua_pushref(lstate, cb);
   nlua_unref(lstate, cb);
-  if (lua_pcall(lstate, 0, 0, 0)) {
+  if (nlua_pcall(lstate, 0, 0)) {
     nlua_error(lstate, _("Error executing vim.schedule lua callback: %.*s"));
   }
 }
@@ -362,7 +382,7 @@ static bool nlua_wait_condition(lua_State *lstate, int *status,
                                 bool *callback_result)
 {
   lua_pushvalue(lstate, 2);
-  *status = lua_pcall(lstate, 0, 1, 0);
+  *status = nlua_pcall(lstate, 0, 1);
   if (*status) {
     return true;  // break on error, but keep error on stack
   }
@@ -591,7 +611,7 @@ static int nlua_state_init(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
   {
     const char *code = (char *)&shared_module[0];
     if (luaL_loadbuffer(lstate, code, strlen(code), "@vim/shared.lua")
-        || lua_pcall(lstate, 0, 0, 0)) {
+        || nlua_pcall(lstate, 0, 0)) {
       nlua_error(lstate, _("E5106: Error while creating shared module: %.*s"));
       return 1;
     }
@@ -603,7 +623,7 @@ static int nlua_state_init(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
 
     const char *code = (char *)&inspect_module[0];
     if (luaL_loadbuffer(lstate, code, strlen(code), "@vim/inspect.lua")
-        || lua_pcall(lstate, 0, 1, 0)) {
+        || nlua_pcall(lstate, 0, 1)) {
       nlua_error(lstate, _("E5106: Error while creating inspect module: %.*s"));
       return 1;
     }
@@ -616,7 +636,7 @@ static int nlua_state_init(lua_State *const lstate) FUNC_ATTR_NONNULL_ALL
   {
     const char *code = (char *)&vim_module[0];
     if (luaL_loadbuffer(lstate, code, strlen(code), "@vim.lua")
-        || lua_pcall(lstate, 0, 0, 0)) {
+        || nlua_pcall(lstate, 0, 0)) {
       nlua_error(lstate, _("E5106: Error while creating vim module: %.*s"));
       return 1;
     }
@@ -756,6 +776,7 @@ static int nlua_print(lua_State *const lstate)
   for (; curargidx <= nargs; curargidx++) {
     lua_pushvalue(lstate, -1);  // tostring
     lua_pushvalue(lstate, curargidx);  // arg
+    // Do not use nlua_pcall here to avoid duplicate stack trace information
     if (lua_pcall(lstate, 1, 1, 0)) {
       errmsg = lua_tolstring(lstate, -1, &errmsg_len);
       goto nlua_print_error;
@@ -824,7 +845,7 @@ int nlua_debug(lua_State *lstate)
     if (luaL_loadbuffer(lstate, (const char *)input.vval.v_string,
                         STRLEN(input.vval.v_string), "=(debug command)")) {
       nlua_error(lstate, _("E5115: Error while loading debug string: %.*s"));
-    } else if (lua_pcall(lstate, 0, 0, 0)) {
+    } else if (nlua_pcall(lstate, 0, 0)) {
       nlua_error(lstate, _("E5116: Error while calling debug string: %.*s"));
     }
     tv_clear(&input);
@@ -1223,7 +1244,7 @@ static void nlua_typval_exec(const char *lcmd, size_t lcmd_len,
 
   PUSH_ALL_TYPVALS(lstate, args, argcount, special);
 
-  if (lua_pcall(lstate, argcount, ret_tv ? 1 : 0, 0)) {
+  if (nlua_pcall(lstate, argcount, ret_tv ? 1 : 0)) {
     nlua_error(lstate, _("E5108: Error executing lua %.*s"));
     return;
   }
@@ -1284,7 +1305,7 @@ int typval_exec_lua_callable(
 
   PUSH_ALL_TYPVALS(lstate, argvars, argcount, false);
 
-  if (lua_pcall(lstate, argcount, 1, 0)) {
+  if (nlua_pcall(lstate, argcount, 1)) {
     nlua_print(lstate);
     return ERROR_OTHER;
   }
@@ -1319,7 +1340,7 @@ Object nlua_exec(const String str, const Array args, Error *err)
     nlua_push_Object(lstate, args.items[i], false);
   }
 
-  if (lua_pcall(lstate, (int)args.size, 1, 0)) {
+  if (nlua_pcall(lstate, (int)args.size, 1)) {
     size_t len;
     const char *errstr = lua_tolstring(lstate, -1, &len);
     api_set_error(err, kErrorTypeException,
@@ -1353,7 +1374,7 @@ Object nlua_call_ref(LuaRef ref, const char *name, Array args,
     nlua_push_Object(lstate, args.items[i], false);
   }
 
-  if (lua_pcall(lstate, nargs, retval ? 1 : 0, 0)) {
+  if (nlua_pcall(lstate, nargs, retval ? 1 : 0)) {
     // if err is passed, the caller will deal with the error.
     if (err) {
       size_t len;
@@ -1447,7 +1468,7 @@ void ex_luado(exarg_T *const eap)
   if (lcmd_len >= IOSIZE) {
     xfree(lcmd);
   }
-  if (lua_pcall(lstate, 0, 1, 0)) {
+  if (nlua_pcall(lstate, 0, 1)) {
     nlua_error(lstate, _("E5110: Error executing lua: %.*s"));
     return;
   }
@@ -1459,7 +1480,7 @@ void ex_luado(exarg_T *const eap)
     const char *old_line = (const char *)ml_get_buf(curbuf, l, false);
     lua_pushstring(lstate, old_line);
     lua_pushnumber(lstate, (lua_Number)l);
-    if (lua_pcall(lstate, 2, 1, 0)) {
+    if (nlua_pcall(lstate, 2, 1)) {
       nlua_error(lstate, _("E5111: Error calling lua: %.*s"));
       break;
     }
@@ -1510,7 +1531,7 @@ bool nlua_exec_file(const char *path)
     return false;
   }
 
-  if (lua_pcall(lstate, 0, 0, 0)) {
+  if (nlua_pcall(lstate, 0, 0)) {
     nlua_error(lstate, _("E5113: Error while calling lua chunk: %.*s"));
     return false;
   }
@@ -1565,7 +1586,7 @@ int nlua_expand_pat(expand_T *xp,
   // [ vim, vim._on_key, buf ]
   lua_pushlstring(lstate, (const char *)pat, STRLEN(pat));
 
-  if (lua_pcall(lstate, 1, 2, 0) != 0) {
+  if (nlua_pcall(lstate, 1, 2) != 0) {
     nlua_error(
         lstate,
         _("Error executing vim._expand_pat: %.*s"));
@@ -1857,7 +1878,7 @@ void nlua_execute_on_key(int c)
   // [ vim, vim._on_key, buf ]
   lua_pushlstring(lstate, (const char *)buf, buf_len);
 
-  if (lua_pcall(lstate, 1, 0, 0)) {
+  if (nlua_pcall(lstate, 1, 0)) {
     nlua_error(
         lstate,
         _("Error executing  vim.on_key Lua callback: %.*s"));
